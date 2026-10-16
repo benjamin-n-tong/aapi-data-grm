@@ -1,0 +1,317 @@
+---
+title: "GRM & Social Support: Moderation Analysis Template"
+subtitle: "Simple moderation (equivalent to PROCESS Model 1) with a centered moderator"
+author: "Ben Tong"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(dplyr)
+library(ggplot2)
+library(knitr)
+# psych and broom are called with psych:: / broom:: on purpose
+# (loading psych after ggplot2 masks functions).
+
+# ---- Switches ---------------------------------------------------------------
+PRACTICE_MODE <- TRUE   # TRUE = Titanic practice data; FALSE = GRM survey data
+CENTER_X      <- FALSE  # Week 2 guide: only the moderator (support/strain) is centered.
+                        # Flip to TRUE if we decide to center GRM too.
+```
+
+# 0. Read this first
+
+**What this file does.** It fits a simple moderation model, `Y ~ X * W + covariates`, with the moderator W mean-centered. This is the same regression PROCESS Model 1 estimates (Hayes, 2022, ch. 7), so the interaction coefficient (b3) and the conditional effect at average W (b1) should match PROCESS output. We can confirm that once PROCESS is set up.
+
+**Roles in the real study:** X = gendered racial microaggressions (GRM), W = social support or strain (one moderator per model), Y = K6 psychological distress or turnover intention.
+
+**Practice mode (default).** Runs the same pipeline on the Titanic data so we can learn the workflow. The Titanic variables stand in for our constructs. *The practice results mean nothing substantively.*
+
+| Role | Practice variable | Real study |
+|---|---|---|
+| Y | `log_fare` (log of ticket fare) | K6 or turnover intention |
+| X | `Age` | GRM |
+| W | `SibSp` (siblings/spouses aboard) | support or strain (centered) |
+| core covariates | `Sex` | age, education, finance strain, work hours |
+| flagged covariates | `Pclass` | relationship status, English proficiency, (nativity/generation) |
+
+## Open decisions (not mine to settle; flagged for Michele)
+
+1. **Flagged covariates (not yet verified).** Relationship status and English proficiency both overlap conceptually with the non-work support/strain moderator. Section 7 reports the model both without and with them, so we can see how much b3 moves. Nativity/immigration generation has no dedicated variable in the variable list (only `years_US`). Supervisory status needs a three-way-interaction logic, so it is deliberately **not** entered as a plain covariate here.
+2. **K6 coding.** The codebook runs 1 to 5 (sum 6 to 30), while the Manuscript 1 write-up text says 0 to 4. Verify before building the scale.
+3. **Analytic N.** Only respondents who completed the optional support/strain module have moderator data, so the moderation models use a subsample. Section 2 reports N at each step.
+4. **Probing.** Per the Week 2 guide, the probing method is chosen together. Section 8 is a placeholder only, and nothing is run.
+5. **Centering GRM.** Default is to center only the moderator (`CENTER_X`).
+
+# 1. Load data and variable map
+
+All variable names live in one list, so switching to the real data means editing only this chunk.
+
+```{r config}
+if (PRACTICE_MODE) {
+  f <- "data/train.csv"   # Kaggle Titanic train.csv (see README for download options)
+  if (!file.exists(f)) {
+    stop("Practice mode needs the Titanic file at data/train.csv. See README.md.")
+  }
+  dat_raw <- read.csv(f, stringsAsFactors = FALSE)
+  dat_raw$log_fare <- log1p(dat_raw$Fare)
+
+  vars <- list(
+    y = "log_fare", x = "Age", w = "SibSp",
+    cov_core    = c("Sex"),
+    cov_flagged = c("Pclass"),
+    cov_cat     = c("Sex", "Pclass")          # covariates to treat as categorical
+  )
+  labels <- list(y = "log(fare)", x = "age", w = "number of siblings/spouses")
+  scale_items <- NULL
+} else {
+  f <- "data/REPLACE_WITH_CLEAN_FILE.csv"       # TODO: file name from Michele
+  if (!file.exists(f)) {
+    stop("Real-data mode: file not found at ", f,
+         ". Put the clean dataset in data/ (it is git-ignored) and update `f` above.")
+  }
+  dat_raw <- read.csv(f, stringsAsFactors = FALSE)
+
+  vars <- list(
+    y = "k6_total",                              # TODO: confirm names in the codebook
+    x = "grm_total",                             # TODO
+    w = "support_supervisor",                    # TODO: one moderator per model
+    cov_core    = c("S4_age", "educ_level", "finance_strain", "work_hoursweek"),
+    cov_flagged = c("relationship_status", "eng_prof"),   # + nativity/generation if added
+    cov_cat     = c("educ_level", "relationship_status")  # TODO: add any other categorical ones
+  )
+  labels <- list(y = "psychological distress (K6)", x = "gendered racial microaggressions",
+                 w = "supervisor support")
+  scale_items <- list(                           # TODO: item column names, for alpha/omega
+    k6 = NULL, grm = NULL, support_supervisor = NULL
+  )
+}
+
+missing_cols <- setdiff(unlist(vars[c("y","x","w","cov_core","cov_flagged")]), names(dat_raw))
+if (length(missing_cols) > 0) {
+  stop("These columns are not in the data: ", paste(missing_cols, collapse = ", "),
+       ". Update the variable map above.")
+}
+```
+
+# 2. Sample size and missing data
+
+```{r missing}
+model_vars <- unique(c(vars$y, vars$x, vars$w, vars$cov_core, vars$cov_flagged))
+dat <- dat_raw
+dat[vars$cov_cat] <- lapply(dat[vars$cov_cat], as.factor)
+
+miss_tbl <- data.frame(
+  variable  = model_vars,
+  n_missing = sapply(dat[model_vars], function(z) sum(is.na(z))),
+  pct_missing = round(100 * sapply(dat[model_vars], function(z) mean(is.na(z))), 1),
+  row.names = NULL
+)
+kable(miss_tbl, caption = "Missing data in the variables used in the models")
+
+dat_cc <- dat[complete.cases(dat[model_vars]), ]
+cat("Rows in file:", nrow(dat), "\n",
+    "Complete cases on every model variable:", nrow(dat_cc), "\n")
+```
+
+All models below use the same complete-case rows, so models are comparable. Complete-case is a placeholder for the missing-data strategy we still need to decide with Michele.
+
+# 3. Scale reliability (Cronbach's alpha and McDonald's omega)
+
+In real mode, fill in `scale_items` above and run `scale_report()` for each scale. Reverse-score items *before* running it. The demo below uses the Agreeableness items that ship with the `psych` package, so you can see the output format.
+
+```{r reliability}
+scale_report <- function(items, name) {
+  if (!requireNamespace("GPArotation", quietly = TRUE)) {
+    stop("McDonald's omega needs the GPArotation package. Run install.packages(\"GPArotation\") once, then knit again.")
+  }
+  a <- psych::alpha(items, check.keys = FALSE)
+  o <- psych::omega(items, nfactors = 1, plot = FALSE)
+  data.frame(scale = name, k_items = ncol(items),
+             alpha = round(a$total$raw_alpha, 2),
+             omega_total = round(o$omega.tot, 2))
+}
+
+if (PRACTICE_MODE) {
+  agree <- psych::bfi[, c("A1", "A2", "A3", "A4", "A5")]
+  agree$A1 <- 7 - agree$A1            # A1 is reverse-keyed on a 1-6 scale
+  kable(scale_report(agree, "Agreeableness (psych::bfi demo)"))
+} else {
+  rel <- lapply(names(scale_items), function(nm) scale_report(dat_raw[scale_items[[nm]]], nm))
+  kable(do.call(rbind, rel))
+}
+```
+
+# 4. Table 1: sample characteristics (analytic sample)
+
+```{r table1}
+table1_rows <- function(d, v) {
+  z <- d[[v]]
+  if (is.numeric(z)) {
+    data.frame(Variable = v, Level = "",
+               Summary = sprintf("M = %.2f, SD = %.2f", mean(z), sd(z)))
+  } else {
+    tab <- table(z)
+    data.frame(Variable = c(v, rep("", length(tab))),
+               Level    = c("", names(tab)),
+               Summary  = c("", sprintf("%d (%.1f%%)", as.integer(tab),
+                                        100 * as.integer(tab) / sum(tab))),
+               row.names = NULL)
+  }
+}
+table1 <- do.call(rbind, lapply(model_vars, function(v) table1_rows(dat_cc, v)))
+kable(table1, caption = paste0("Sample characteristics (N = ", nrow(dat_cc), ")"))
+```
+
+# 5. Descriptives and correlations
+
+```{r descriptives}
+num_vars <- model_vars[sapply(dat_cc[model_vars], is.numeric)]
+desc <- psych::describe(dat_cc[num_vars])[, c("n", "mean", "sd", "min", "max", "skew")]
+kable(round(desc, 2), caption = "Descriptive statistics (numeric variables)")
+```
+
+```{r correlations}
+ct <- psych::corr.test(dat_cc[num_vars], use = "pairwise", adjust = "none")
+stars <- ifelse(ct$p < .001, "***", ifelse(ct$p < .01, "**", ifelse(ct$p < .05, "*", "")))
+cor_out <- matrix(paste0(sprintf("%.2f", ct$r), stars), nrow = nrow(ct$r),
+                  dimnames = dimnames(ct$r))
+cor_out[upper.tri(cor_out, diag = TRUE)] <- ""
+kable(cor_out, caption = "Pearson correlations (* p < .05, ** p < .01, *** p < .001)")
+```
+
+# 6. Moderation model (PROCESS Model 1 equivalent)
+
+```{r center}
+dat_cc$Y   <- dat_cc[[vars$y]]
+x_raw      <- dat_cc[[vars$x]]
+w_raw      <- dat_cc[[vars$w]]
+dat_cc$W_c <- w_raw - mean(w_raw)                      # moderator centered at its mean
+dat_cc$X   <- if (CENTER_X) x_raw - mean(x_raw) else x_raw
+cat("Mean of moderator used for centering:", round(mean(w_raw), 3), "\n")
+```
+
+```{r model1}
+fit_pair <- function(covs, label) {
+  m0 <- lm(reformulate(c("X", "W_c", covs), "Y"), data = dat_cc)        # no product term
+  m1 <- lm(reformulate(c("X * W_c", covs), "Y"), data = dat_cc)         # with product term
+  b3 <- broom::tidy(m1, conf.int = TRUE) |> filter(term == "X:W_c")
+  list(m0 = m0, m1 = m1,
+       row = data.frame(Model = label, N = nobs(m1), b3 = b3$estimate,
+                        CI_low = b3$conf.low, CI_high = b3$conf.high,
+                        p = b3$p.value,
+                        R2_change = summary(m1)$r.squared - summary(m0)$r.squared))
+}
+
+core <- fit_pair(vars$cov_core, "Core covariates")
+m1   <- core$m1
+
+coef_tbl <- broom::tidy(m1, conf.int = TRUE) |>
+  mutate(p.value = format.pval(p.value, digits = 3, eps = .001)) |>
+  mutate(across(where(is.numeric), ~ round(.x, 3)))
+kable(coef_tbl, caption = "Model 1: Y ~ X * W (W centered) + core covariates")
+```
+
+In the table, `X` is **`r labels$x`**, `W_c` is **`r labels$w`** centered at its mean, and `Y` is **`r labels$y`**.
+
+How to read the coefficients (Hayes, 2022, pp. 243 to 258):
+
+- **`X:W_c` (b3)** is the test of moderation: how much the X-Y slope changes per one-unit higher W. Its p-value is the same as the p-value for the R-squared change below.
+- **`X` (b1)** is the association between X and Y *at average W* (because W is centered). It is a conditional effect, not a "main effect."
+- **`W_c` (b2)** is the association between W and Y when X = 0. If X is not centered, check that 0 is meaningful on its scale before interpreting it.
+
+```{r r2change}
+a <- anova(core$m0, m1)
+cat(sprintf("R-squared change from the product term = %.4f; F(%d, %d) = %.2f, p = %s\n",
+            core$row$R2_change, a$Df[2], a$Res.Df[2], a$F[2],
+            format.pval(a$`Pr(>F)`[2], digits = 3, eps = .001)))
+```
+
+```{r sentence, results='asis'}
+r <- core$row
+cat(sprintf(
+  "**Draft interaction sentence (check the plot before describing the pattern):** The association between %s and %s was moderated by %s (b = %.2f, 95%% CI [%.2f, %.2f], p = %s).\n",
+  labels$x, labels$y, labels$w, r$b3, r$CI_low, r$CI_high,
+  format.pval(r$p, digits = 3, eps = .001)))
+```
+
+Wording reminder from the Week 2 guide: describe patterns ("was weaker at higher levels of support"), and avoid causal verbs such as protects, reduces, or buffers against.
+
+```{r diagnostics, fig.height=3.5}
+par(mfrow = c(1, 2)); plot(m1, which = 1:2); par(mfrow = c(1, 1))
+```
+
+# 7. Covariate overlap check and sensitivity model
+
+The flagged covariates may share variance with the moderator. This section gives two checks, but it does not decide anything. That decision is Michele's.
+
+```{r overlap}
+overlap <- data.frame(
+  covariate = vars$cov_flagged,
+  R2_with_W = sapply(vars$cov_flagged, function(cv)
+    summary(lm(reformulate(cv, "W_c"), data = dat_cc))$r.squared),
+  R2_with_X = sapply(vars$cov_flagged, function(cv)
+    summary(lm(reformulate(cv, "X"), data = dat_cc))$r.squared),
+  row.names = NULL)
+kable(overlap, digits = 3,
+      caption = "Share of variance in W (and X) explained by each flagged covariate on its own")
+```
+
+```{r sensitivity}
+flag <- fit_pair(c(vars$cov_core, vars$cov_flagged), "Core + flagged covariates")
+sens <- rbind(core$row, flag$row)
+sens$p <- format.pval(sens$p, digits = 3, eps = .001)
+kable(sens, digits = 3, row.names = FALSE,
+      caption = "Does the interaction (b3) change when the flagged covariates are added? Same rows in both models.")
+```
+
+# 8. Plot of the interaction
+
+Lines are predicted Y across X at the 16th, 50th, and 84th percentiles of W (Hayes, 2022, p. 259), with covariates held at their means (numeric) or most common category. These plotting values are provisional. If the moderator is skewed, some percentiles can coincide, and then fewer lines appear.
+
+```{r plot, fig.height=4.5}
+w_vals <- unique(quantile(dat_cc$W_c, c(.16, .50, .84)))
+if (length(w_vals) < 3) message("Some W percentiles coincide; showing ", length(w_vals), " lines.")
+x_seq <- seq(min(dat_cc$X), max(dat_cc$X), length.out = 50)
+grid  <- expand.grid(X = x_seq, W_c = w_vals)
+for (cv in vars$cov_core) {
+  z <- dat_cc[[cv]]
+  grid[[cv]] <- if (is.numeric(z)) mean(z) else
+    factor(names(which.max(table(z))), levels = levels(z))
+}
+grid$pred <- predict(m1, newdata = grid)
+grid$W_level <- factor(round(grid$W_c + mean(w_raw), 2))
+
+ggplot(grid, aes(X, pred, linetype = W_level, colour = W_level)) +
+  geom_line(linewidth = 1) +
+  labs(x = labels$x, y = paste("Predicted", labels$y),
+       colour = paste0(labels$w, "\n(16th/50th/84th pct)"),
+       linetype = paste0(labels$w, "\n(16th/50th/84th pct)")) +
+  theme_minimal(base_size = 12)
+```
+
+# 9. Probing placeholder (not run)
+
+Per the Week 2 guide, the probing approach (pick-a-point and/or Johnson-Neyman) will be chosen together. Below is only a sketch of the regression-centering version of pick-a-point (Hayes, 2022, p. 265), kept switched off so nothing here is mistaken for a result.
+
+```{r probe, eval=FALSE}
+probe_at <- function(w_value, covs) {   # w_value on the centered-W scale
+  d <- dat_cc
+  d$W_at <- d$W_c - w_value
+  m <- lm(reformulate(c("X * W_at", covs), "Y"), data = d)
+  broom::tidy(m, conf.int = TRUE) |> filter(term == "X")   # conditional effect of X at W = w_value
+}
+```
+
+Reminder: the claim of moderation rests on b3. Conditional effects only describe where the X-Y association is or is not distinguishable from zero.
+
+# Session info
+
+```{r session}
+sessionInfo()
+```
