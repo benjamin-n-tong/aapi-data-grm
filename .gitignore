@@ -5,3 +5,19 @@
 .httr-oauth
 .DS_Store
 .quarto
+
+# ---- SURVEY DATA MUST NEVER BE COMMITTED ----
+# data/ holds participant-level files. Only the placeholder is tracked.
+data/*
+!data/.gitkeep
+*.csv
+*.xlsx
+*.xls
+*.sav
+*.rds
+*.RData
+*.rda
+
+# Knitted output can contain results from the real data.
+*.html
+*.pdf

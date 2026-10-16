@@ -1,0 +1,85 @@
+---
+title: "Practice tables on Titanic data: sample characteristics and descriptives/correlations"
+author: "Ben Tong"
+output:
+  html_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+options(knitr.kable.NA = "")
+```
+
+**Purpose.** Practice run of the two tables assigned on Oct 9 (sample characteristics table; descriptives/correlation table) using the public Titanic practice file. No GRM survey data are used here. When Michele sends the cleaned dataset, the same code is reused with the study variables swapped in (see the last section).
+
+## 1. Read and prepare the data
+
+```{r data}
+if (!file.exists("data/train.csv")) stop("data/train.csv not found. Check getwd() and that the file is in the data folder.")
+dat <- read.csv("data/train.csv", na.strings = c("", "NA"))
+dat$Survived <- factor(dat$Survived, levels = 0:1, labels = c("No", "Yes"))
+dat$Pclass   <- factor(dat$Pclass, levels = 1:3, labels = c("1st", "2nd", "3rd"))
+cat("Rows:", nrow(dat), " Columns:", ncol(dat), "\n")
+```
+
+## 2. Table 1. Sample characteristics
+
+Continuous variables are shown as M (SD); categorical variables as n (%). Percentages use the non-missing cases for that variable, and the Missing column reports how many were dropped.
+
+```{r table1}
+summarize_var <- function(d, v) {
+  z <- d[[v]]; n_miss <- sum(is.na(z))
+  if (is.numeric(z)) {
+    data.frame(Variable = v, Level = "",
+               Summary = sprintf("M = %.2f, SD = %.2f", mean(z, na.rm = TRUE), sd(z, na.rm = TRUE)),
+               Missing = n_miss)
+  } else {
+    tab <- table(z)
+    data.frame(Variable = c(v, rep("", length(tab))),
+               Level    = c("", names(tab)),
+               Summary  = c("", sprintf("%d (%.1f%%)", as.integer(tab), 100 * as.integer(tab) / sum(tab))),
+               Missing  = c(n_miss, rep(NA, length(tab))))
+  }
+}
+t1_vars <- c("Survived", "Pclass", "Sex", "Age", "SibSp", "Parch", "Fare", "Embarked")
+t1 <- do.call(rbind, lapply(t1_vars, function(v) summarize_var(dat, v)))
+knitr::kable(t1, row.names = FALSE,
+             caption = paste0("Table 1. Sample characteristics (N = ", nrow(dat), ")"))
+```
+
+## 3. Table 2. Descriptives and correlations
+
+```{r desc}
+num_vars <- c("Age", "SibSp", "Parch", "Fare")
+desc <- psych::describe(dat[num_vars])[, c("n", "mean", "sd", "min", "max", "skew")]
+knitr::kable(round(desc, 2), caption = "Table 2a. Descriptive statistics")
+```
+
+Pairwise-complete correlations (Pearson). Stars are unadjusted p-values: * < .05, ** < .01, *** < .001.
+
+```{r corr}
+ct <- psych::corr.test(dat[num_vars], use = "pairwise", adjust = "none")
+stars <- ifelse(ct$p < .001, "***", ifelse(ct$p < .01, "**", ifelse(ct$p < .05, "*", "")))
+cor_out <- matrix(paste0(sprintf("%.2f", ct$r), stars), nrow = nrow(ct$r), dimnames = dimnames(ct$r))
+cor_out[upper.tri(cor_out, diag = TRUE)] <- ""
+knitr::kable(cor_out, caption = "Table 2b. Correlations (lower triangle)")
+```
+
+Pairwise n for each correlation:
+
+```{r npair}
+knitr::kable(ct$n)
+```
+
+## 4. Notes on reading the tables
+
+* `Age` is missing for about 20% of passengers, so any model using `Age` drops those rows. This is the same issue the survey data will have: the analytic N is the complete-case N, not the full N.
+* `Fare` and `SibSp` are strongly right-skewed (see `skew`). With the survey data, check skew on K6 and the GRM scale before relying on Pearson correlations.
+* Correlations here are descriptive. They are not a test of moderation.
+
+## 5. What changes for the real survey data
+
+* Replace `t1_vars` with the demographics and work variables from the codebook and decide, with Michele, whether Table 1 describes the full sample or the optional-module subsample.
+* Replace `num_vars` with the scale scores (GRM, support, strain, K6, turnover intention) and add Cronbach's alpha on the diagonal or in a separate column.
+* Do not print participant-level rows or knit output with small cells to a shared place; the `.gitignore` excludes `*.html` and data files for that reason.
